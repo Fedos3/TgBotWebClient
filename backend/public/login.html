@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TgBotWebClient</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --card: rgba(15, 23, 42, 0.86);
+      --border: rgba(148, 163, 184, 0.2);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #0ea5e9;
+      --danger: #fda4af;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font: 16px/1.4 Inter, system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(56, 189, 248, 0.18), transparent 32%),
+        linear-gradient(180deg, #111827, #020617 70%);
+      padding: 24px;
+    }
+
+    .card {
+      width: min(100%, 420px);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: 0 24px 80px rgba(2, 6, 23, 0.45);
+      backdrop-filter: blur(16px);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      line-height: 1.1;
+    }
+
+    p {
+      margin: 0 0 20px;
+      color: var(--muted);
+    }
+
+    form {
+      display: grid;
+      gap: 14px;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.7);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 14px 16px;
+      font: inherit;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: rgba(56, 189, 248, 0.8);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
+    }
+
+    .remember {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 14px;
+      user-select: none;
+      cursor: pointer;
+    }
+
+    .remember input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+      border-radius: 4px;
+      box-shadow: none;
+    }
+
+    button {
+      border: 0;
+      border-radius: 14px;
+      padding: 14px 16px;
+      font: inherit;
+      font-weight: 700;
+      color: #082f49;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.7;
+      cursor: default;
+    }
+
+    .error {
+      min-height: 22px;
+      color: var(--danger);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>TgBotWebClient</h1>
+    <p>Read and reply to bot users from Mac, iPhone, and the web.</p>
+    <form id="login-form">
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password" required />
+      <label class="remember" for="remember">
+        <input id="remember" type="checkbox" />
+        <span>Remember this browser</span>
+      </label>
+      <button id="submit" type="submit">Open panel</button>
+      <div id="error" class="error" aria-live="polite"></div>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const password = document.getElementById('password');
+    const remember = document.getElementById('remember');
+    const submit = document.getElementById('submit');
+    const error = document.getElementById('error');
+    const params = new URLSearchParams(window.location.search);
+    const fallbackNext = window.location.pathname === '/login'
+      ? '/'
+      : `${window.location.pathname}${window.location.search}${window.location.hash || ''}`;
+
+    function sanitizeNext(rawNext) {
+      if (!rawNext || typeof rawNext !== 'string') {
+        return '/';
+      }
+
+      if (!rawNext.startsWith('/') || rawNext.startsWith('//')) {
+        return '/';
+      }
+
+      try {
+        const url = new URL(rawNext, window.location.origin);
+        if (url.origin !== window.location.origin) {
+          return '/';
+        }
+
+        return `${url.pathname}${url.search}${url.hash}`;
+      } catch {
+        return '/';
+      }
+    }
+
+    const next = sanitizeNext(params.get('next') || fallbackNext || '/');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      error.textContent = '';
+      submit.disabled = true;
+
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            password: password.value,
+            remember: remember.checked,
+          }),
+        });
+
+        if (!response.ok) {
+          if (response.status === 429) {
+            throw new Error('Too many attempts. Try again later.');
+          }
+          throw new Error('Invalid password');
+        }
+
+        const current = `${window.location.pathname}${window.location.search}${window.location.hash || ''}`;
+        if (next === current) {
+          window.location.reload();
+        } else {
+          window.location.replace(next);
+        }
+      } catch (err) {
+        error.textContent = err.message || 'Login failed';
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

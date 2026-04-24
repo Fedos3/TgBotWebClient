@@ -1,0 +1,9 @@
+.git
+.gitignore
+frontend/node_modules
+frontend/dist
+backend/node_modules
+backend/data.sqlite
+backend/.env
+panel-data
+**/.DS_Store
