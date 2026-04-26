@@ -78,6 +78,7 @@ let availableBots: BotPanelBot[] = [];
 let botsLoadedPromise: Promise<BotPanelBot[]> | undefined;
 let maxBots = 5;
 let canAddMoreBots = true;
+let isBotConnectionPending = false;
 
 const emptyUserStatus = { type: 'userStatusRecently' } as const;
 const ACTIVE_BOT_STORAGE_KEY = 'tt-bot-panel-active-bot-id';
@@ -131,6 +132,7 @@ export function getCachedBotPanelMeta() {
     bots: availableBots,
     maxBots,
     canAddMore: canAddMoreBots,
+    isBotConnectionPending,
   };
 }
 
@@ -192,6 +194,7 @@ function updateBotsState(data: BackendBotsPayload) {
   availableBots = (data.bots || []) as BotPanelBot[];
   maxBots = Number(data.maxBots) || 5;
   canAddMoreBots = data.canAddMore !== undefined ? Boolean(data.canAddMore) : availableBots.length < maxBots;
+  isBotConnectionPending = !availableBots.length;
 
   const storedBotId = getStoredActiveBotId();
   const defaultBotId = String(data.defaultBotId || availableBots[0]?.id || '');
@@ -491,6 +494,29 @@ function buildChatListData(payload: { chats: BackendChatRow[]; lastMessages?: Ba
 async function loadCurrentUser() {
   await fetchBotPanelBots();
   const botId = getActiveBotId();
+  if (!botId) {
+    currentUser = {
+      id: '0',
+      isMin: false,
+      isSelf: true,
+      type: 'userTypeBot',
+      firstName: 'Bot Panel',
+      phoneNumber: '',
+      botPlaceholder: 'Connect a bot',
+    };
+    currentUserFullInfo = {
+      bio: 'Connect your first bot from the left header.',
+    };
+
+    onUpdate?.({
+      '@type': 'updateCurrentUser',
+      currentUser,
+      currentUserFullInfo,
+    });
+
+    return currentUser;
+  }
+
   const data = await apiFetch(appendBotId('/api/me', botId));
   const bot = data.bot as BackendBot;
 
@@ -520,7 +546,7 @@ async function loadCurrentUser() {
 }
 
 function ensureEventStream() {
-  if (eventSource || !onUpdate) return;
+  if (eventSource || !onUpdate || !getActiveBotId()) return;
 
   const botId = getActiveBotId();
   eventSource = new EventSource(appendBotId('/api/stream', botId), { withCredentials: true });
@@ -610,11 +636,25 @@ export async function initBotPanelApi(update: OnApiUpdate) {
 }
 
 async function fetchChats() {
+  if (!getActiveBotId()) {
+    return buildEmptyChatList();
+  }
+
   const payload = await apiFetch(appendBotId('/api/chats?limit=200', getActiveBotId()));
   return buildChatListData(payload);
 }
 
 async function fetchMessages({ chat, offsetId, limit }: { chat: ApiChat; offsetId?: number; limit: number }) {
+  if (!getActiveBotId()) {
+    return {
+      messages: [],
+      users: [],
+      chats: [],
+      count: undefined,
+      topics: [],
+    };
+  }
+
   const params = new URLSearchParams();
   params.set('limit', String(limit));
   if (offsetId) {
@@ -634,6 +674,10 @@ async function fetchMessages({ chat, offsetId, limit }: { chat: ApiChat; offsetI
 }
 
 async function fetchMessagesById({ chat, messageIds }: { chat: ApiChat; messageIds: number[] }) {
+  if (!getActiveBotId()) {
+    return [];
+  }
+
   const payload = await apiFetch(`/api/chats/${chat.id}/messages/by-id`, {
     method: 'POST',
     body: JSON.stringify({ ids: messageIds, botId: getActiveBotId() }),
@@ -642,6 +686,15 @@ async function fetchMessagesById({ chat, messageIds }: { chat: ApiChat; messageI
 }
 
 async function fetchFullChat(chat: ApiChat) {
+  if (!getActiveBotId()) {
+    return {
+      fullInfo: {},
+      chats: [],
+      userStatusesById: {},
+      membersCount: undefined,
+    };
+  }
+
   const payload = await apiFetch(appendBotId(`/api/chats/${chat.id}`, getActiveBotId()));
   const row = payload.chat as BackendChatRow;
   const fullInfo: ApiChatFullInfo = {
@@ -666,6 +719,10 @@ async function fetchFullUser({ id }: { id: string }) {
     };
   }
 
+  if (!getActiveBotId()) {
+    return undefined;
+  }
+
   const payload = await apiFetch(appendBotId(`/api/chats/${id}`, getActiveBotId()));
   const row = payload.chat as BackendChatRow;
   const user = mapUser(row);
@@ -682,6 +739,10 @@ async function fetchFullUser({ id }: { id: string }) {
 }
 
 async function requestChatUpdate({ chat }: { chat: ApiChat }) {
+  if (!getActiveBotId()) {
+    return true;
+  }
+
   const payload = await apiFetch(appendBotId(`/api/chats/${chat.id}`, getActiveBotId()));
   const row = payload.chat as BackendChatRow;
   onUpdate?.({
@@ -717,7 +778,7 @@ async function fetchCurrentUserApi() {
 }
 
 async function sendMessage(params: any, _onProgress?: ApiOnProgress) {
-  if (!params?.chat?.id) return undefined;
+  if (!params?.chat?.id || !getActiveBotId()) return undefined;
 
   const text = String(params.text || '').trim();
   if (!text) return undefined;
@@ -739,6 +800,10 @@ async function answerCallbackButton({
   messageId: number;
   data?: string;
 }) {
+  if (!getActiveBotId()) {
+    return undefined;
+  }
+
   const payload = await apiFetch(`/api/chats/${chatId}/callback`, {
     method: 'POST',
     body: JSON.stringify({ msgId: messageId, data, botId: getActiveBotId() }),
@@ -760,6 +825,10 @@ async function downloadMedia({
   end?: number;
   isHtmlAllowed?: boolean;
 }) {
+  if (!getActiveBotId()) {
+    return undefined;
+  }
+
   const response = await fetch('/api/media', {
     method: 'POST',
     credentials: 'include',

@@ -334,7 +334,9 @@ async function bootstrapBots() {
   const startupConfigs = [...envConfigs, ...storedConfigs].slice(0, MAX_BOTS);
 
   if (!startupConfigs.length) {
-    throw new Error('At least one BOT_TOKEN or BOT_TOKEN_1..BOT_TOKEN_5 is required');
+    console.warn('[bot] no startup bots configured; waiting for UI connection');
+    defaultBotId = undefined;
+    return;
   }
 
   for (const config of startupConfigs) {
@@ -354,7 +356,9 @@ async function bootstrapBots() {
 }
 
 await bootstrapBots();
-migrateLegacyData(defaultBotId);
+if (defaultBotId) {
+  migrateLegacyData(defaultBotId);
+}
 
 const auth = createAuth({ password: PANEL_PASSWORD, secret: SESSION_SECRET });
 
@@ -512,7 +516,12 @@ app.post('/api/bots', auth.middleware, async (req, res) => {
 
 app.get('/api/me', auth.middleware, (req, res) => {
   const bot = getBotContext(req);
-  if (!bot) return res.status(404).json({ error: 'bot_not_found' });
+  if (!bot) {
+    return res.json({
+      bot: null,
+      ...buildBotsPayload(),
+    });
+  }
 
   res.json({
     bot: {
@@ -528,7 +537,9 @@ app.get('/api/me', auth.middleware, (req, res) => {
 
 app.get('/api/chats', auth.middleware, async (req, res) => {
   const bot = getBotContext(req);
-  if (!bot) return res.status(404).json({ error: 'bot_not_found' });
+  if (!bot) {
+    return res.json({ chats: [], lastMessages: [] });
+  }
   res.json(await buildChatsPayload(bot, Number(req.query.limit) || 200));
 });
 

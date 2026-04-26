@@ -45,6 +45,7 @@ const BotPanelSwitcher: FC = () => {
   const [submitError, setSubmitError] = useState<string | undefined>();
   const [canAddMore, setCanAddMore] = useState(initialMeta.canAddMore);
   const [maxBots, setMaxBots] = useState(initialMeta.maxBots);
+  const [isBotConnectionPending, setIsBotConnectionPending] = useState(Boolean(initialMeta.isBotConnectionPending));
 
   useEffect(() => {
     if (!IS_BOT_PANEL) {
@@ -56,6 +57,7 @@ const BotPanelSwitcher: FC = () => {
       setBots(meta.bots as BotOption[]);
       setCanAddMore(meta.canAddMore);
       setMaxBots(meta.maxBots);
+      setIsBotConnectionPending(Boolean(meta.isBotConnectionPending));
       setActiveBotIdState(getStoredActiveBotId());
     });
 
@@ -63,11 +65,12 @@ const BotPanelSwitcher: FC = () => {
       setBots(payload.bots as BotOption[]);
       setCanAddMore(payload.canAddMore);
       setMaxBots(payload.maxBots);
+      setIsBotConnectionPending(!payload.bots.length);
       setActiveBotIdState(getStoredActiveBotId());
     });
   }, []);
 
-  if (!IS_BOT_PANEL || !bots.length) {
+  if (!IS_BOT_PANEL) {
     return undefined;
   }
 
@@ -127,19 +130,25 @@ const BotPanelSwitcher: FC = () => {
   return (
     <>
       <div className="BotPanelSwitcher">
-        <select
-          className="BotPanelSwitcher-select"
-          value={activeBotId || String(bots[0].id)}
-          onChange={handleChange}
-          aria-label="Select bot"
-          title="Switch bot"
-        >
-          {bots.map((bot) => (
-            <option key={bot.id} value={String(bot.id)}>
-              {formatBotLabel(bot)}
-            </option>
-          ))}
-        </select>
+        {bots.length ? (
+          <select
+            className="BotPanelSwitcher-select"
+            value={activeBotId || String(bots[0].id)}
+            onChange={handleChange}
+            aria-label="Select bot"
+            title="Switch bot"
+          >
+            {bots.map((bot) => (
+              <option key={bot.id} value={String(bot.id)}>
+                {formatBotLabel(bot)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="BotPanelSwitcher-empty" title="No bots connected yet">
+            Connect bot
+          </div>
+        )}
         <Button
           className="BotPanelSwitcher-add"
           round
@@ -187,6 +196,7 @@ const BotPanelSwitcher: FC = () => {
           </div>
           <div className="BotPanelSwitcherModal-help">
             Up to {maxBots} bots. New bots connect immediately and keep saving messages in background.
+            {isBotConnectionPending ? ' Add the first bot to start using the panel.' : ''}
           </div>
           {submitError && (
             <div className="BotPanelSwitcherModal-error">
