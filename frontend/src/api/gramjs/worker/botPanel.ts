@@ -415,16 +415,111 @@ function buildAudioContent(row: BackendMessageRow) {
   };
 }
 
+function buildVideoContent(row: BackendMessageRow) {
+  const id = getStoredMediaId(row.media_file_id);
+  if (!id) return undefined;
+
+  const meta = parseMediaMeta(row.media_meta);
+  const mimeType = meta?.mime || 'video/mp4';
+  return {
+    mediaType: 'video' as const,
+    id,
+    mimeType,
+    duration: Number(meta?.duration) || 0,
+    fileName: meta?.name || 'video.mp4',
+    width: Number(meta?.w) || undefined,
+    height: Number(meta?.h) || undefined,
+    size: Number(meta?.size) || 0,
+    supportsStreaming: mimeType === 'video/mp4',
+    isGif: row.media_type === 'animation' || undefined,
+    isRound: row.media_type === 'video_note' || undefined,
+    noSound: row.media_type === 'animation' || undefined,
+  };
+}
+
+function buildDocumentContent(row: BackendMessageRow) {
+  const id = getStoredMediaId(row.media_file_id);
+  if (!id) return undefined;
+
+  const meta = parseMediaMeta(row.media_meta);
+  return {
+    mediaType: 'document' as const,
+    id,
+    fileName: meta?.name || 'file',
+    size: Number(meta?.size) || 0,
+    mimeType: meta?.mime || 'application/octet-stream',
+  };
+}
+
+function buildStickerContent(row: BackendMessageRow) {
+  const id = getStoredMediaId(row.media_file_id);
+  if (!id) return undefined;
+
+  const meta = parseMediaMeta(row.media_meta);
+  return {
+    mediaType: 'sticker' as const,
+    id,
+    stickerSetInfo: { isMissing: true as const },
+    emoji: meta?.emoji,
+    isLottie: meta?.mime === 'application/x-tgsticker',
+    isVideo: meta?.mime === 'video/webm',
+    width: Number(meta?.w) || 512,
+    height: Number(meta?.h) || 512,
+  };
+}
+
+function buildLocationContent(row: BackendMessageRow) {
+  const meta = parseMediaMeta(row.media_meta);
+  if (meta?.lat === undefined || meta?.lon === undefined) return undefined;
+
+  return {
+    mediaType: 'geo' as const,
+    geo: { lat: Number(meta.lat), long: Number(meta.lon), accessHash: '0' },
+  };
+}
+
+function buildContactContent(row: BackendMessageRow) {
+  const meta = parseMediaMeta(row.media_meta);
+  if (!meta) return undefined;
+
+  return {
+    mediaType: 'contact' as const,
+    firstName: meta.firstName || '',
+    lastName: meta.lastName || '',
+    phoneNumber: meta.phone || '',
+    userId: '0',
+  };
+}
+
+function buildMediaContent(row: BackendMessageRow) {
+  switch (row.media_type) {
+    case 'photo':
+      return { photo: buildPhotoContent(row) };
+    case 'voice':
+      return { voice: buildVoiceContent(row) };
+    case 'audio':
+      return { audio: buildAudioContent(row) };
+    case 'video':
+    case 'animation':
+    case 'video_note':
+      return { video: buildVideoContent(row) };
+    case 'document':
+      return { document: buildDocumentContent(row) };
+    case 'sticker':
+      return { sticker: buildStickerContent(row) };
+    case 'location':
+      return { location: buildLocationContent(row) };
+    case 'contact':
+      return { contact: buildContactContent(row) };
+    default:
+      return {};
+  }
+}
+
 function mapMessage(row: BackendMessageRow): ApiMessage {
   const fallbackText = buildMessageText(row);
   const keyboard = mapReplyMarkup(row.reply_markup);
-  const mediaContent = row.media_type === 'photo'
-    ? { photo: buildPhotoContent(row) }
-    : row.media_type === 'voice'
-      ? { voice: buildVoiceContent(row) }
-      : row.media_type === 'audio'
-        ? { audio: buildAudioContent(row) }
-        : {};
+  const mediaContent = buildMediaContent(row);
   const hasMediaContent = Object.values(mediaContent).some(Boolean);
   const text = row.text || (!hasMediaContent ? fallbackText : undefined);
 
@@ -812,6 +907,15 @@ async function answerCallbackButton({
   return payload.answer;
 }
 
+// Progressive (streamed) parts arrive as full service-worker URLs like
+// https://host/progressive/document123?start=0&end=524287; the backend only
+// needs the media hash ("document123", optionally with "?size=m").
+function normalizeMediaUrl(url: string) {
+  const lastSegment = url.includes('/') ? url.slice(url.lastIndexOf('/') + 1) : url;
+  const match = lastSegment.match(/^(avatar|profile|photo|document|sticker)(-?\d+)(\?size=\w)?/);
+  return match ? `${match[1]}${match[2]}${match[3] || ''}` : undefined;
+}
+
 async function downloadMedia({
   url,
   mediaFormat,
@@ -829,6 +933,11 @@ async function downloadMedia({
     return undefined;
   }
 
+  const mediaUrl = normalizeMediaUrl(url);
+  if (!mediaUrl) {
+    return undefined;
+  }
+
   const response = await fetch('/api/media', {
     method: 'POST',
     credentials: 'include',
@@ -837,7 +946,7 @@ async function downloadMedia({
     },
     body: JSON.stringify({
       botId: getActiveBotId(),
-      url,
+      url: mediaUrl,
       mediaFormat,
       start,
       end,

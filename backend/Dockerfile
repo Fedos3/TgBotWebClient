@@ -1,4 +1,5 @@
-FROM node:22 AS frontend-build
+# The bundle is plain JS, so build it natively even when targeting another arch.
+FROM --platform=$BUILDPLATFORM node:22 AS frontend-build
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./

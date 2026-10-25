@@ -1,4 +1,6 @@
 import { TelegramClient, Api } from 'telegram';
+import bigInt from 'big-integer';
+import { Logger, LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import { EditedMessage } from 'telegram/events/EditedMessage.js';
@@ -15,13 +17,22 @@ export async function createMtprotoClient({ apiId, apiHash, botToken, sessionKey
     connectionRetries: 5,
     useWSS: false,
     autoReconnect: true,
-    baseLogger: { log: () => {}, warn: () => {}, error: console.error, info: () => {}, debug: () => {} },
+    floodSleepThreshold: 120,
+    // GramJS calls canSend() on the logger in its error paths, so a plain
+    // object here turns every network hiccup into an uncaught TypeError.
+    baseLogger: new Logger(LogLevel.ERROR),
   });
 
-  await client.start({
-    botAuthToken: botToken,
-    onError: (err) => console.error('[mtproto]', err),
-  });
+  try {
+    await client.start({
+      botAuthToken: botToken,
+      onError: (err) => console.error('[mtproto]', err),
+    });
+  } catch (err) {
+    // Otherwise the half-started client keeps reconnecting in the background.
+    await client.destroy().catch(() => {});
+    throw err;
+  }
 
   const newSession = client.session.save();
   if (newSession && newSession !== saved) setMeta(sessionKey, newSession);
@@ -130,22 +141,81 @@ function getMimeType(data, fallbackMimeType = 'image/jpeg') {
   }
 }
 
-export async function downloadMessageMedia(client, { chatId, messageId, sizeType, start, end }) {
+const DOWNLOAD_PART_SIZE = 512 * 1024;
+const MEDIA_CACHE_TTL_MS = 10 * 60 * 1000;
+const MEDIA_CACHE_MAX = 200;
+const mediaCache = new Map();
+
+// Progressive video playback requests the same message once per 512 KB part,
+// so keep the resolved media around instead of refetching it every time.
+async function getCachedMessageMedia(client, chatId, messageId) {
+  const key = `${chatId}:${messageId}`;
+  const cached = mediaCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.media;
+  }
+
   const entity = await client.getEntity(chatId);
   const result = await client.getMessages(entity, { ids: [Number(messageId)] });
   const message = Array.isArray(result) ? result[0] : result;
   const media = message?.media;
+
+  if (media) {
+    mediaCache.delete(key);
+    mediaCache.set(key, { media, expiresAt: Date.now() + MEDIA_CACHE_TTL_MS });
+    if (mediaCache.size > MEDIA_CACHE_MAX) {
+      mediaCache.delete(mediaCache.keys().next().value);
+    }
+  }
+
+  return media;
+}
+
+function pickDocumentThumb(document) {
+  const thumbs = (document.thumbs || []).filter((thumb) => (
+    thumb.className === 'PhotoSize' || thumb.className === 'PhotoSizeProgressive'
+  ));
+  if (!thumbs.length) return undefined;
+
+  const getSize = (thumb) => (thumb.className === 'PhotoSizeProgressive'
+    ? Math.max(...thumb.sizes)
+    : thumb.size);
+  return thumbs.sort((a, b) => getSize(b) - getSize(a))[0];
+}
+
+async function downloadRange(client, media, fullSize, start, end) {
+  const from = Math.max(0, start);
+  const to = Math.min(end ?? fullSize - 1, fullSize - 1);
+  if (to < from) return Buffer.alloc(0);
+
+  // upload.getFile wants part-aligned offsets, so fetch whole parts and trim.
+  const alignedStart = Math.floor(from / DOWNLOAD_PART_SIZE) * DOWNLOAD_PART_SIZE;
+  const partsCount = Math.ceil((to + 1 - alignedStart) / DOWNLOAD_PART_SIZE);
+  const parts = [];
+
+  for await (const chunk of client.iterDownload({
+    file: media,
+    offset: bigInt(alignedStart),
+    requestSize: DOWNLOAD_PART_SIZE,
+    limit: partsCount,
+    fileSize: bigInt(fullSize),
+  })) {
+    parts.push(chunk);
+  }
+
+  return Buffer.concat(parts).subarray(from - alignedStart, to - alignedStart + 1);
+}
+
+export async function downloadMessageMedia(client, { chatId, messageId, sizeType, start, end }) {
+  const media = await getCachedMessageMedia(client, chatId, messageId);
 
   if (!media) {
     return undefined;
   }
 
   if (media.className === 'MessageMediaPhoto' && media.photo) {
-    const data = await client.downloadMedia(media.photo, {
-      sizeType,
-      start,
-      end,
-    });
+    const sized = sizeType ? await client.downloadMedia(media, { thumb: sizeType }) : undefined;
+    const data = sized?.length ? sized : await client.downloadMedia(media, {});
 
     return {
       mimeType: 'image/jpeg',
@@ -155,15 +225,28 @@ export async function downloadMessageMedia(client, { chatId, messageId, sizeType
   }
 
   if (media.className === 'MessageMediaDocument' && media.document) {
-    const data = await client.downloadMedia(media.document, {
-      sizeType,
-      start,
-      end,
-    });
+    const { document } = media;
+    const fullSize = Number(document.size) || 0;
+
+    if (sizeType) {
+      const thumb = pickDocumentThumb(document);
+      if (!thumb) return undefined;
+
+      return {
+        mimeType: 'image/jpeg',
+        fullSize: undefined,
+        data: await client.downloadMedia(media, { thumb }),
+      };
+    }
+
+    const isRange = start !== undefined && Number.isFinite(start) && fullSize > 0;
+    const data = isRange
+      ? await downloadRange(client, media, fullSize, start, end)
+      : await client.downloadMedia(media, {});
 
     return {
-      mimeType: media.document.mimeType || 'application/octet-stream',
-      fullSize: Number(media.document.size) || undefined,
+      mimeType: document.mimeType || 'application/octet-stream',
+      fullSize: fullSize || undefined,
       data,
     };
   }

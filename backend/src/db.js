@@ -156,14 +156,17 @@ const upsertChatStmt = db.prepare(`
     updated_at = excluded.updated_at
 `);
 
+// Message ids are a per-bot counter, so a smaller id means an older message
+// (e.g. one restored by backfill) that must not replace the chat preview.
 const touchChatLastMsgStmt = db.prepare(`
   UPDATE bot_chats SET
     last_message_id = @id,
     last_message_date = @date,
     last_message_text = @text,
-    unread_count = CASE WHEN @is_outgoing = 0 THEN COALESCE(unread_count, 0) + 1 ELSE unread_count END,
+    unread_count = CASE WHEN @is_outgoing = 0 AND @count_unread = 1
+      THEN COALESCE(unread_count, 0) + 1 ELSE unread_count END,
     updated_at = @date
-  WHERE bot_id = @bot_id AND chat_id = @chat_id
+  WHERE bot_id = @bot_id AND chat_id = @chat_id AND @id >= COALESCE(last_message_id, 0)
 `);
 
 const insertMessageStmt = db.prepare(`
@@ -236,11 +239,45 @@ export function insertMessage(botId, msg) {
   });
 }
 
-export function touchChatLastMsg(botId, row) {
+export function touchChatLastMsg(botId, row, { countUnread = true } = {}) {
   touchChatLastMsgStmt.run({
     bot_id: String(botId),
     ...row,
+    count_unread: countUnread ? 1 : 0,
   });
+}
+
+export function runInTransaction(fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function getMessageIdBounds(botId) {
+  return db.prepare(`
+    SELECT MIN(id) AS min_id, MAX(id) AS max_id FROM bot_messages WHERE bot_id = ?
+  `).get(String(botId));
+}
+
+// Ranges of message ids missing between stored messages, starting above `afterId`.
+export function listMessageIdGaps(botId, afterId = 0) {
+  return db.prepare(`
+    SELECT id + 1 AS from_id, next_id - 1 AS to_id FROM (
+      SELECT id, LEAD(id) OVER (ORDER BY id) AS next_id
+      FROM bot_messages WHERE bot_id = ?
+    )
+    WHERE next_id - id > 1 AND next_id > ?
+    ORDER BY id
+  `).all(String(botId), afterId).map((gap) => ({
+    from: Math.max(gap.from_id, afterId + 1),
+    to: gap.to_id,
+  }));
 }
 
 export function listChats(botId, limit = 200) {

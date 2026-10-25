@@ -50,6 +50,12 @@ if (!TOKEN_STORE_KEY.length) {
   throw new Error('SESSION_SECRET or BOT_STORE_SECRET is required');
 }
 
+// GramJS runs its update/reconnect loops as detached promises; one failing
+// there must not kill the panel.
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err?.stack || err);
+});
+
 const loginAttemptsByIp = new Map();
 const hub = new EventHub();
 const botById = new Map();
@@ -328,6 +334,24 @@ async function connectRuntimeBot(config, options = {}) {
   return bot;
 }
 
+const BOT_RETRY_MIN_MS = 15 * 1000;
+const BOT_RETRY_MAX_MS = 5 * 60 * 1000;
+
+// A bot that cannot reach Telegram right now (network outage, blocked DC)
+// keeps retrying in the background instead of taking the whole panel down.
+function connectWithRetry(config, attempt = 0) {
+  connectRuntimeBot(config, { allowStoredSlotRefresh: true })
+    .then(() => {
+      if (defaultBotId && attempt > 0) migrateLegacyData(defaultBotId);
+    })
+    .catch((err) => {
+      if (err.message === 'bot_already_connected' || err.message === 'bot_limit_reached') return;
+      const delay = Math.min(BOT_RETRY_MIN_MS * 2 ** attempt, BOT_RETRY_MAX_MS);
+      console.error(`[bot:${config.slot}] ${err.message}; retrying in ${Math.round(delay / 1000)}s`);
+      setTimeout(() => connectWithRetry(config, attempt + 1), delay).unref();
+    });
+}
+
 async function bootstrapBots() {
   const envConfigs = buildEnvBotConfigs();
   const storedConfigs = buildStoredBotConfigs(envConfigs);
@@ -344,14 +368,14 @@ async function bootstrapBots() {
       await connectRuntimeBot(config, { allowStoredSlotRefresh: true });
     } catch (err) {
       console.error(`[bot:${config.slot}] ${err.message}`);
-      if (config.source === 'env') {
-        throw err;
+      if (err.message !== 'bot_already_connected') {
+        setTimeout(() => connectWithRetry(config, 1), BOT_RETRY_MIN_MS).unref();
       }
     }
   }
 
   if (!botClients.length) {
-    throw new Error('No bots could be connected');
+    console.warn('[bot] no bots connected yet; panel is up and will keep retrying');
   }
 }
 
@@ -632,7 +656,7 @@ app.post('/api/media', auth.middleware, async (req, res) => {
   if (!bot) return res.status(404).json({ error: 'bot_not_found' });
 
   const mediaUrl = String(req.body?.url || '');
-  const match = mediaUrl.match(/^(avatar|profile|photo|document)([^?]+)(?:\?size=([a-z]))?(?:\?.*)?$/i);
+  const match = mediaUrl.match(/^(avatar|profile|photo|document|sticker)([^?]+)(?:\?size=([a-z]))?(?:\?.*)?$/i);
   if (!match) {
     return res.status(400).json({ error: 'unsupported_media_url' });
   }
