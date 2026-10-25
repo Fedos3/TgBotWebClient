@@ -6,6 +6,15 @@ import { NewMessage } from 'telegram/events/index.js';
 import { EditedMessage } from 'telegram/events/EditedMessage.js';
 import { getMeta, setMeta } from './db.js';
 
+// TG_SOCKS_PROXY=host:port — where Telegram DCs are blocked by IP (e.g. RU
+// servers), MTProto goes through a SOCKS5 proxy instead of directly.
+function socksProxy() {
+  const value = (process.env.TG_SOCKS_PROXY || '').trim();
+  if (!value) return null;
+  const [ip, port] = value.split(':');
+  return { ip, port: Number(port), socksType: 5, timeout: 10 };
+}
+
 export async function createMtprotoClient({ apiId, apiHash, botToken, sessionKey = 'mtproto_session' }) {
   if (!apiId || !apiHash) throw new Error('API_ID and API_HASH are required');
   if (!botToken) throw new Error('BOT_TOKEN is required');
@@ -16,6 +25,7 @@ export async function createMtprotoClient({ apiId, apiHash, botToken, sessionKey
   const client = new TelegramClient(session, Number(apiId), String(apiHash), {
     connectionRetries: 5,
     useWSS: false,
+    ...(socksProxy() && { proxy: socksProxy() }),
     autoReconnect: true,
     floodSleepThreshold: 120,
     // GramJS calls canSend() on the logger in its error paths, so a plain

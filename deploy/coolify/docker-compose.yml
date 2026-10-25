@@ -1,0 +1,38 @@
+# Panel under Coolify on the Micra prod server (Selectel, RU).
+#
+# Telegram DCs are blocked there by IP, so MTProto goes through the prod
+# stack's `tg-vpn` (OpenVPN + HTTP CONNECT proxy on :8888). GramJS speaks only
+# SOCKS, hence `tgpanel-socks`: SOCKS5 on :1080 chained to that HTTP proxy.
+# `tg-vpn` resolves via the shared `coolify` network — the resource needs
+# "Connect To Predefined Network" enabled.
+#
+# No `ports:` — the panel is exposed by Coolify's proxy (domain in the UI,
+# port 3000). Build paths are relative to the repo root.
+
+services:
+  panel:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      TG_SOCKS_PROXY: tgpanel-socks:1080
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+      PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+      SESSION_SECRET: ${SERVICE_PASSWORD_64_SESSION}
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      BOT_LABEL: ${BOT_LABEL:-}
+    volumes:
+      - panel-data:/data
+    depends_on:
+      - tgpanel-socks
+
+  tgpanel-socks:
+    image: gogost/gost:3.0.0
+    restart: unless-stopped
+    command: ["-L", "socks5://:1080", "-F", "http://tg-vpn:8888"]
+
+volumes:
+  panel-data:
