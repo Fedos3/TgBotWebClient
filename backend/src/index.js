@@ -35,6 +35,7 @@ const {
   API_ID,
   API_HASH,
   PANEL_PASSWORD,
+  PANEL_BASIC_AUTH,
   SESSION_SECRET,
   BOT_STORE_SECRET,
   PORT = 3000,
@@ -463,8 +464,23 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   next();
 });
+
+// PANEL_BASIC_AUTH=user:password — a second, independent credential in front of
+// everything (login page, API, static), so a leaked panel password alone is not enough.
+const basicAuthExpected = PANEL_BASIC_AUTH
+  ? Buffer.from(`Basic ${Buffer.from(PANEL_BASIC_AUTH).toString('base64')}`)
+  : null;
+if (basicAuthExpected) {
+  app.use((req, res, next) => {
+    const got = Buffer.from(String(req.headers.authorization || ''));
+    if (got.length === basicAuthExpected.length && crypto.timingSafeEqual(got, basicAuthExpected)) return next();
+    res.setHeader('WWW-Authenticate', 'Basic realm="panel", charset="UTF-8"');
+    res.status(401).end();
+  });
+}
 
 app.post('/api/login', (req, res) => {
   const retryAt = isLoginRateLimited(req);

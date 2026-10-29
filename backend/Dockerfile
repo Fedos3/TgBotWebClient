@@ -32,6 +32,9 @@ ENV FRONTEND_DIST=frontend-dist
 
 EXPOSE 3000
 
+RUN mkdir -p /data && chown node:node /data
+USER node
+
 VOLUME ["/data"]
 
 CMD ["node", "--no-warnings", "src/index.js"]

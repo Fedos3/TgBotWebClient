@@ -22,6 +22,10 @@ services:
       API_HASH: ${API_HASH:-}
       PANEL_PASSWORD: ${PANEL_PASSWORD:-}
       SESSION_SECRET: ${SERVICE_PASSWORD_64_SESSION}
+      # Encrypts stored bot tokens; separate from SESSION_SECRET so rotating the
+      # session key (logs everyone out) does not lose the tokens.
+      BOT_STORE_SECRET: ${SERVICE_PASSWORD_64_BOTSTORE}
+      PANEL_BASIC_AUTH: ${PANEL_BASIC_AUTH:-}
       BOT_TOKEN: ${BOT_TOKEN:-}
       BOT_LABEL: ${BOT_LABEL:-}
     volumes:
